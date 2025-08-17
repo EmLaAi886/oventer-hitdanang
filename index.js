@@ -26,6 +26,9 @@ let last_sid_100 = null;
 let last_sid_101 = null;
 let sid_for_tx = null;
 
+let current_session_100 = 0;
+let current_session_101 = 0;
+
 function getTaiXiu(d1, d2, d3) {
   const total = d1 + d2 + d3;
   return total <= 10 ? "Xỉu" : "Tài";
@@ -47,6 +50,42 @@ function duDoan(history, last_n = 10) {
   return tai_count > xiu_count ? "Tài" : "Xỉu";
 }
 
+function predictPattern(history, patternLength = 3) {
+  if (history.length < patternLength + 1) {
+    return "Chưa có đủ dữ liệu";
+  }
+
+  const patterns = {};
+  for (let i = 0; i < history.length - patternLength; i++) {
+    const patternKey = history
+      .slice(i, i + patternLength)
+      .map(h => h.Ket_qua)
+      .join("-");
+    const nextResult = history[i + patternLength].Ket_qua;
+
+    if (!patterns[patternKey]) {
+      patterns[patternKey] = { Tài: 0, Xỉu: 0 };
+    }
+    patterns[patternKey][nextResult]++;
+  }
+
+  const recentPattern = history
+    .slice(0, patternLength)
+    .map(h => h.Ket_qua)
+    .join("-");
+
+  if (patterns[recentPattern]) {
+    const patternData = patterns[recentPattern];
+    if (patternData.Tài > patternData.Xỉu) {
+      return "Tài";
+    } else if (patternData.Xỉu > patternData.Tài) {
+      return "Xỉu";
+    }
+  }
+
+  return duDoan(history);
+}
+
 async function pollAPI(gid, is_md5) {
   const url = `https://jakpotgwab.geightdors.net/glms/v1/notify/taixiu?platform_id=g8&gid=${gid}`;
   while (true) {
@@ -56,6 +95,7 @@ async function pollAPI(gid, is_md5) {
         for (const game of data.data) {
           if (!is_md5 && game.cmd === 1008) {
             sid_for_tx = game.sid;
+            current_session_100 = game.sid;
           }
         }
         for (const game of data.data) {
@@ -68,6 +108,7 @@ async function pollAPI(gid, is_md5) {
               const result = { Phien: sid, Xuc_xac_1: d1, Xuc_xac_2: d2, Xuc_xac_3: d3, Tong: total, Ket_qua: ket_qua, id: "binhtool90" };
               updateResult(latest_result_101, history_101, result);
               console.log(`[MD5] Phiên ${sid} - Tổng: ${total}, Kết quả: ${ket_qua}`);
+              current_session_101 = sid + 1;
             }
           } else if (!is_md5 && game.cmd === 1003) {
             const { d1, d2, d3 } = game;
@@ -79,6 +120,7 @@ async function pollAPI(gid, is_md5) {
               const result = { Phien: sid, Xuc_xac_1: d1, Xuc_xac_2: d2, Xuc_xac_3: d3, Tong: total, Ket_qua: ket_qua, id: "binhtool90" };
               updateResult(latest_result_100, history_100, result);
               console.log(`[TX] Phiên ${sid} - Tổng: ${total}, Kết quả: ${ket_qua}`);
+              current_session_100 = sid + 1;
               sid_for_tx = null;
             }
           }
@@ -93,12 +135,22 @@ async function pollAPI(gid, is_md5) {
 
 // Routes
 app.get("/api/taixiu", (req, res) => {
-  const result = { ...latest_result_100, du_doan: duDoan(history_100) };
+  const result = {
+    ...latest_result_100,
+    du_doan_co_ban: duDoan(history_100),
+    du_doan_nang_cao: predictPattern(history_100),
+    phien_hien_tai: current_session_100
+  };
   res.json(result);
 });
 
 app.get("/api/taixiumd5", (req, res) => {
-  const result = { ...latest_result_101, du_doan: duDoan(history_101) };
+  const result = {
+    ...latest_result_101,
+    du_doan_co_ban: duDoan(history_101),
+    du_doan_nang_cao: predictPattern(history_101),
+    phien_hien_tai: current_session_101
+  };
   res.json(result);
 });
 
@@ -115,3 +167,4 @@ pollAPI("vgmn_100", false);
 pollAPI("vgmn_101", true);
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
