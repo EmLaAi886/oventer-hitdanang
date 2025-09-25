@@ -42,99 +42,71 @@ function updateResult(store, history, result) {
 }
 
 /*-----------------------
-  Thuật toán dự đoán xịn hơn
+  Thuật toán dự đoán xịn
 -----------------------*/
 function duDoan(history, last_n = 12) {
   if (!history.length) return "Chưa có dữ liệu";
 
   const recent = history.slice(0, last_n);
-  
-  // Phân tích xu hướng mạnh mẽ
-  let tai_count = 0, xiu_count = 0;
-  let consecutive_tai = 0, consecutive_xiu = 0;
-  let max_consecutive_tai = 0, max_consecutive_xiu = 0;
+  const fullSeq = history.map((h) => h.Ket_qua);
 
-  for (let i = 0; i < recent.length; i++) {
-    if (recent[i].Ket_qua === "Tài") {
-      tai_count++;
-      consecutive_tai++;
-      consecutive_xiu = 0;
-      if (consecutive_tai > max_consecutive_tai) max_consecutive_tai = consecutive_tai;
-    } else {
-      xiu_count++;
-      consecutive_xiu++;
-      consecutive_tai = 0;
-      if (consecutive_xiu > max_consecutive_xiu) max_consecutive_xiu = consecutive_xiu;
+  // 1. Đếm Tài/Xỉu gần nhất
+  const tai_count = recent.filter((h) => h.Ket_qua === "Tài").length;
+  const xiu_count = recent.filter((h) => h.Ket_qua === "Xỉu").length;
+
+  // 2. Phân tích chuỗi (pattern) 3 phiên gần nhất
+  const last3 = fullSeq.slice(0, 3).join("-");
+  const matchSeq = fullSeq.filter((_, i) => i + 3 < fullSeq.length)
+    .map((_, i) => fullSeq.slice(i, i + 3).join("-"));
+  const idx = matchSeq.indexOf(last3);
+  let seq_predict = null;
+  if (idx !== -1) {
+    seq_predict = fullSeq[idx + 3]; // dự đoán theo mẫu chuỗi
+  }
+
+  // 3. Markov Chain bậc 2
+  let markov_predict = null;
+  if (fullSeq.length >= 3) {
+    const trans = {};
+    for (let i = 0; i < fullSeq.length - 2; i++) {
+      const key = fullSeq[i] + "-" + fullSeq[i + 1];
+      if (!trans[key]) trans[key] = { Tài: 0, Xỉu: 0 };
+      trans[key][fullSeq[i + 2]]++;
+    }
+    const last2 = fullSeq[0] + "-" + fullSeq[1];
+    if (trans[last2]) {
+      const { Tài, Xỉu } = trans[last2];
+      markov_predict = Tài > Xỉu ? "Tài" : Xỉu > Tài ? "Xỉu" : null;
     }
   }
 
-  // Phân tích chu kỳ và đảo chiều
-  let trend_reversal = false;
-  if (recent.length >= 4) {
-    const last4 = recent.slice(0, 4);
-    const pattern = last4.map(h => h.Ket_qua);
-    
-    // Phát hiện xu hướng đảo chiều
-    if ((pattern[0] === pattern[1] && pattern[1] !== pattern[2]) || 
-        (pattern[0] !== pattern[1] && pattern[1] === pattern[2])) {
-      trend_reversal = true;
-    }
+  // 4. Kết hợp kết quả
+  let final_predict = "Không rõ";
+  if (seq_predict) {
+    final_predict = seq_predict; // Ưu tiên theo mẫu chuỗi
+  } else if (markov_predict) {
+    final_predict = markov_predict; // Sau đó Markov
+  } else {
+    final_predict = tai_count > xiu_count ? "Tài" : "Xỉu";
   }
 
-  // Dự đoán thông minh hơn
-  let prediction = "Không rõ";
-
-  // Ưu tiên phát hiện đảo chiều
-  if (trend_reversal && recent.length >= 3) {
-    prediction = recent[0].Ket_qua === "Tài" ? "Xỉu" : "Tài";
-  }
-  // Chuỗi dài thì đảo chiều
-  else if (max_consecutive_tai >= 3) {
-    prediction = "Xỉu";
-  }
-  else if (max_consecutive_xiu >= 3) {
-    prediction = "Tài";
-  }
-  // Phân tích tỷ lệ đơn giản
-  else {
-    const tai_ratio = tai_count / recent.length;
-    const xiu_ratio = xiu_count / recent.length;
-    
-    if (tai_ratio > 0.6) prediction = "Xỉu";
-    else if (xiu_ratio > 0.6) prediction = "Tài";
-    else prediction = tai_count > xiu_count ? "Xỉu" : "Tài";
-  }
-
-  return prediction;
+  return final_predict;
 }
 
 /*-----------------------
-  Poll API - Tao sửa lại cho chắc
+  Poll API
 -----------------------*/
 async function pollAPI(gid, is_md5) {
   const url = `https://jakpotgwab.geightdors.net/glms/v1/notify/taixiu?platform_id=g8&gid=${gid}`;
-  
   while (true) {
     try {
-      const { data } = await axios.get(url, { 
-        headers: { 
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          "Accept": "application/json",
-          "Connection": "keep-alive"
-        }, 
-        timeout: 10000 
-      });
-      
+      const { data } = await axios.get(url, { headers: { "User-Agent": "Node-Proxy/1.0" }, timeout: 10000 });
       if (data.status === "OK" && Array.isArray(data.data)) {
-        // Xử lý sid trước
-        if (!is_md5) {
-          const cmd1008 = data.data.find(game => game.cmd === 1008);
-          if (cmd1008 && cmd1008.sid) {
-            sid_for_tx = cmd1008.sid;
+        for (const game of data.data) {
+          if (!is_md5 && game.cmd === 1008) {
+            sid_for_tx = game.sid;
           }
         }
-
-        // Xử lý kết quả
         for (const game of data.data) {
           if (is_md5 && game.cmd === 2006) {
             const { sid, d1, d2, d3 } = game;
@@ -153,7 +125,7 @@ async function pollAPI(gid, is_md5) {
                 phien_hien_tai: sid + 1,
               };
               updateResult(latest_result_101, history_101, result);
-              console.log(`[MD5] Phiên ${sid} - ${d1},${d2},${d3} - Tổng: ${total}, Kết quả: ${ket_qua}`);
+              console.log(`[MD5] Phiên ${sid} - Tổng: ${total}, Kết quả: ${ket_qua}`);
             }
           } else if (!is_md5 && game.cmd === 1003) {
             const { d1, d2, d3 } = game;
@@ -173,46 +145,34 @@ async function pollAPI(gid, is_md5) {
                 phien_hien_tai: sid + 1,
               };
               updateResult(latest_result_100, history_100, result);
-              console.log(`[TX] Phiên ${sid} - ${d1},${d2},${d3} - Tổng: ${total}, Kết quả: ${ket_qua}`);
+              console.log(`[TX] Phiên ${sid} - Tổng: ${total}, Kết quả: ${ket_qua}`);
               sid_for_tx = null;
             }
           }
         }
       }
     } catch (err) {
-      console.error(`Lỗi API ${gid}:`, err.message);
+      console.error(`Lỗi khi lấy dữ liệu API ${gid}:`, err.message);
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL));
   }
 }
 
 /*-----------------------
-  Routes - Giữ nguyên
+  Routes
 -----------------------*/
 app.get("/api/taixiu", (req, res) => {
-  const result = { 
-    ...latest_result_100, 
-    du_doan: duDoan(history_100),
-    so_phien_ganday: history_100.length
-  };
+  const result = { ...latest_result_100, du_doan: duDoan(history_100) };
   res.json(result);
 });
 
 app.get("/api/taixiumd5", (req, res) => {
-  const result = { 
-    ...latest_result_101, 
-    du_doan: duDoan(history_101),
-    so_phien_ganday: history_101.length
-  };
+  const result = { ...latest_result_101, du_doan: duDoan(history_101) };
   res.json(result);
 });
 
 app.get("/api/history", (req, res) => {
-  res.json({ 
-    taixiu: history_100, 
-    taixiumd5: history_101,
-    tong_so_phien: history_100.length + history_101.length
-  });
+  res.json({ taixiu: history_100, taixiumd5: history_101 });
 });
 
 app.get("/", (req, res) => {
@@ -220,9 +180,9 @@ app.get("/", (req, res) => {
 });
 
 /*-----------------------
-  Start server
+  Start polling
 -----------------------*/
 pollAPI("vgmn_100", false);
 pollAPI("vgmn_101", true);
 
-app.listen(PORT, () => console.log(`Server chạy trên port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
